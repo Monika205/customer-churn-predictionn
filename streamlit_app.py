@@ -1,6 +1,5 @@
 
 import streamlit as st
-import requests
 import pandas as pd
 import json
 import os
@@ -71,19 +70,38 @@ st.markdown("""
 # CONFIGURATION
 # =========================================================
 
-API_URL = "http://127.0.0.1:8000"
+# Direct local inference: no separate FastAPI server is required on Streamlit Cloud.
+MODEL_PATH = "final_model.pkl"
+PREPROCESSOR_PATH = "preprocessor.pkl"
+
+@st.cache_resource
+def load_artifacts():
+    loaded_model = joblib.load(MODEL_PATH)
+    loaded_preprocessor = joblib.load(PREPROCESSOR_PATH)
+    return loaded_model, loaded_preprocessor
+
+def predict_customer(customer_data):
+    input_df = pd.DataFrame([customer_data])
+    transformed = preprocessor.transform(input_df)
+    prediction_value = int(model.predict(transformed)[0])
+    probability_value = float(model.predict_proba(transformed)[0][1])
+    label = "Churn" if prediction_value == 1 else "Not Churn"
+    return {"prediction": label, "probability": probability_value}
+
+try:
+    model, preprocessor = load_artifacts()
+    model_loaded = True
+    model_name = type(model).__name__
+except Exception as e:
+    model = None
+    preprocessor = None
+    model_loaded = False
+    model_name = "Unavailable"
 
 # =========================================================
 # LOAD MODEL INFORMATION
 # =========================================================
 
-model_name = "Logistic Regression"
-
-try:
-    model = joblib.load("final_model.pkl")
-    model_name = type(model).__name__
-except:
-    pass
 
 # =========================================================
 # LOAD METRICS
@@ -114,26 +132,11 @@ with st.sidebar:
 
     st.markdown("### ⚙️ System Controls")
 
-    st.text_input(
-        "FastAPI Base URL",
-        value=API_URL,
-        disabled=True
-    )
-
-    # API STATUS
-    try:
-        health_response = requests.get(
-            f"{API_URL}/health",
-            timeout=2
-        )
-
-        if health_response.status_code == 200:
-            st.success("🟢 API Online")
-        else:
-            st.warning("🟡 API Unstable")
-
-    except:
-        st.error("🔴 API Offline")
+    st.caption("Prediction runs directly using the saved model.")
+    if model_loaded:
+        st.success("🟢 Model loaded")
+    else:
+        st.error("🔴 Model could not be loaded. Check app logs and model files.")
 
     st.divider()
 
@@ -431,124 +434,106 @@ with tab1:
         }
 
         try:
+            if not model_loaded:
+                raise RuntimeError("The model/preprocessor could not be loaded. Check Streamlit Cloud logs.")
+            result = predict_customer(customer_data)
+            prediction = result["prediction"]
+            probability = float(result["probability"])
 
-            response = requests.post(
-                f"{API_URL}/predict",
-                json=customer_data,
-                timeout=10
-            )
+            st.markdown("## 📌 Risk Assessment")
 
-            if response.status_code == 200:
+            col1, col2, col3 = st.columns(3)
 
-                result = response.json()
+            with col1:
+                st.metric(
+                    "Prediction",
+                    prediction
+                )
 
-                prediction = result["prediction"]
-                probability = float(result["probability"])
+            with col2:
+                st.metric(
+                    "Churn Probability",
+                    f"{probability * 100:.2f}%"
+                )
 
-                st.markdown("## 📌 Risk Assessment")
-
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    st.metric(
-                        "Prediction",
-                        prediction
-                    )
-
-                with col2:
-                    st.metric(
-                        "Churn Probability",
-                        f"{probability * 100:.2f}%"
-                    )
-
-                with col3:
-
-                    if probability >= 0.70:
-                        risk = "High Risk"
-                    elif probability >= 0.40:
-                        risk = "Moderate Risk"
-                    else:
-                        risk = "Low Risk"
-
-                    st.metric(
-                        "Risk Level",
-                        risk
-                    )
-
-                # RISK MESSAGE
+            with col3:
 
                 if probability >= 0.70:
-
-                    st.error(
-                        "🚨 High churn risk detected. "
-                        "Customer retention action is recommended."
-                    )
-
+                    risk = "High Risk"
                 elif probability >= 0.40:
-
-                    st.warning(
-                        "⚠️ Moderate churn risk detected. "
-                        "Customer should be monitored."
-                    )
-
+                    risk = "Moderate Risk"
                 else:
+                    risk = "Low Risk"
 
-                    st.success(
-                        "✅ Low churn risk detected. "
-                        "Customer currently appears stable."
-                    )
+                st.metric(
+                    "Risk Level",
+                    risk
+                )
 
-                # RETENTION RECOMMENDATIONS
+            # RISK MESSAGE
 
-                st.markdown("### 💡 Retention Recommendations")
+            if probability >= 0.70:
 
-                recommendations = []
+                st.error(
+                    "🚨 High churn risk detected. "
+                    "Customer retention action is recommended."
+                )
 
-                if Contract == "Month-to-month":
-                    recommendations.append(
-                        "Offer a longer-term contract with an attractive incentive."
-                    )
+            elif probability >= 0.40:
 
-                if tenure <= 12:
-                    recommendations.append(
-                        "Provide an onboarding or loyalty offer for the new customer."
-                    )
-
-                if MonthlyCharges >= 80:
-                    recommendations.append(
-                        "Review pricing and offer a suitable service bundle."
-                    )
-
-                if OnlineSecurity == "No":
-                    recommendations.append(
-                        "Consider offering an online security add-on."
-                    )
-
-                if TechSupport == "No":
-                    recommendations.append(
-                        "Consider offering technical support or assistance."
-                    )
-
-                if not recommendations:
-                    recommendations.append(
-                        "Continue regular engagement and loyalty monitoring."
-                    )
-
-                for recommendation in recommendations:
-                    st.write("•", recommendation)
+                st.warning(
+                    "⚠️ Moderate churn risk detected. "
+                    "Customer should be monitored."
+                )
 
             else:
 
-                st.error(
-                    f"API Error ({response.status_code}): "
-                    f"{response.text}"
+                st.success(
+                    "✅ Low churn risk detected. "
+                    "Customer currently appears stable."
                 )
 
-        except requests.exceptions.RequestException as e:
+            # RETENTION RECOMMENDATIONS
 
-            st.error(
-                f"❌ Could not connect to FastAPI: {e}"
-            )
+            st.markdown("### 💡 Retention Recommendations")
+
+            recommendations = []
+
+            if Contract == "Month-to-month":
+                recommendations.append(
+                    "Offer a longer-term contract with an attractive incentive."
+                )
+
+            if tenure <= 12:
+                recommendations.append(
+                    "Provide an onboarding or loyalty offer for the new customer."
+                )
+
+            if MonthlyCharges >= 80:
+                recommendations.append(
+                    "Review pricing and offer a suitable service bundle."
+                )
+
+            if OnlineSecurity == "No":
+                recommendations.append(
+                    "Consider offering an online security add-on."
+                )
+
+            if TechSupport == "No":
+                recommendations.append(
+                    "Consider offering technical support or assistance."
+                )
+
+            if not recommendations:
+                recommendations.append(
+                    "Continue regular engagement and loyalty monitoring."
+                )
+
+            for recommendation in recommendations:
+                st.write("•", recommendation)
+
+        except Exception as e:
+            st.error(f"Prediction failed: {e}")
 
 # =========================================================
 # TAB 2 — BATCH PREDICTION
@@ -604,33 +589,22 @@ with tab2:
                     customer.pop("customerID", None)
 
                     try:
-
-                        response = requests.post(
-                            f"{API_URL}/predict",
-                            json=customer,
-                            timeout=10
-                        )
-
-                        if response.status_code == 200:
-
-                            result = response.json()
-
-                            predictions.append(
-                                result["prediction"]
-                            )
-
-                            probabilities.append(
-                                result["probability"]
-                            )
-
-                        else:
-
-                            predictions.append("Error")
-                            probabilities.append(None)
-
-                    except:
-
-                        predictions.append("Error")
+                        if not model_loaded:
+                            raise RuntimeError("Model not loaded")
+                        # Keep only the 19 features expected by the trained pipeline.
+                        feature_names = [
+                            "gender", "SeniorCitizen", "Partner", "Dependents", "tenure",
+                            "PhoneService", "MultipleLines", "InternetService", "OnlineSecurity",
+                            "OnlineBackup", "DeviceProtection", "TechSupport", "StreamingTV",
+                            "StreamingMovies", "Contract", "PaperlessBilling", "PaymentMethod",
+                            "MonthlyCharges", "TotalCharges"
+                        ]
+                        customer = {name: customer[name] for name in feature_names}
+                        result = predict_customer(customer)
+                        predictions.append(result["prediction"])
+                        probabilities.append(result["probability"])
+                    except Exception as e:
+                        predictions.append(f"Error: {e}")
                         probabilities.append(None)
 
                     progress.progress(
@@ -761,9 +735,9 @@ User
   ↓
 Streamlit Web Interface
   ↓
-FastAPI Prediction API
+Direct Model Inference
   ↓
-Input Validation
+Input Preparation
   ↓
 Preprocessing
   ↓
